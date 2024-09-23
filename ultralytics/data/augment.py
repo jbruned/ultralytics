@@ -716,7 +716,6 @@ class Mosaic(BaseMixTransform):
             mosaic_labels.append(labels_patch)
         final_labels = self._cat_labels(mosaic_labels)
         final_labels["img"] = img4
-        cv2.imwrite("mosaic.jpg", img4)
         return final_labels
 
     def _mosaic9(self, labels):
