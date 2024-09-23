@@ -105,8 +105,12 @@ hsv_h: 0.015 # (float) image HSV-Hue augmentation (fraction)
 hsv_s: 0.7 # (float) image HSV-Saturation augmentation (fraction)
 hsv_v: 0.4 # (float) image HSV-Value augmentation (fraction)
 degrees: 0.0 # (float) image rotation (+/- deg)
+degrees_prob: 1 # (float) image rotation (probability)
+rotate90_prob: 0 # (float) image rotate90 (probability)
 translate: 0.1 # (float) image translation (+/- fraction)
 scale: 0.5 # (float) image scale (+/- gain)
+allow_out_of_bounds: True # (bool) image scale allow out of bounds
+centered_mosaic: False # (bool) less-randomized mosaic center
 shear: 0.0 # (float) image shear (+/- deg)
 perspective: 0.0 # (float) image perspective (+/- fraction), range 0-0.001
 flipud: 0.0 # (float) image flip up-down (probability)

@@ -499,6 +499,7 @@ class Mosaic(BaseMixTransform):
         p (float): Probability of applying the mosaic augmentation. Must be in the range 0-1.
         n (int): The grid size, either 4 (for 2x2) or 9 (for 3x3).
         border (Tuple[int, int]): Border size for width and height.
+        centered_mosaic (bool): Whether to allow augmented images to go out of bounds.
 
     Methods:
         get_indexes: Returns a list of random indexes from the dataset.
@@ -516,7 +517,7 @@ class Mosaic(BaseMixTransform):
         >>> augmented_labels = mosaic_aug(original_labels)
     """
 
-    def __init__(self, dataset, imgsz=640, p=1.0, n=4):
+    def __init__(self, dataset, imgsz=640, p=1.0, n=4, centered_mosaic=False):
         """
         Initializes the Mosaic augmentation object.
 
@@ -528,6 +529,7 @@ class Mosaic(BaseMixTransform):
             imgsz (int): Image size (height and width) after mosaic pipeline of a single image.
             p (float): Probability of applying the mosaic augmentation. Must be in the range 0-1.
             n (int): The grid size, either 4 (for 2x2) or 9 (for 3x3).
+            centered_mosaic (bool): Whether to allow augmented images to go out of bounds.
 
         Examples:
             >>> from ultralytics.data.augment import Mosaic
@@ -540,6 +542,7 @@ class Mosaic(BaseMixTransform):
         self.imgsz = imgsz
         self.border = (-imgsz // 2, -imgsz // 2)  # width, height
         self.n = n
+        self.centered_mosaic = centered_mosaic
 
     def get_indexes(self, buffer=True):
         """
@@ -680,7 +683,10 @@ class Mosaic(BaseMixTransform):
         """
         mosaic_labels = []
         s = self.imgsz
-        yc, xc = (int(random.uniform(-x, 2 * s + x)) for x in self.border)  # mosaic center x, y
+        if self.centered_mosaic:
+            yc, xc = (int(random.uniform(-x, 2 * s + x)) for x in self.border)  # mosaic center x, y
+        else:
+            yc, xc = (int(random.uniform(s * 0.75, s * 1.25)) for _ in self.border)  # mosaic center x, y
         for i in range(4):
             labels_patch = labels if i == 0 else labels["mix_labels"][i - 1]
             # Load image
@@ -710,6 +716,7 @@ class Mosaic(BaseMixTransform):
             mosaic_labels.append(labels_patch)
         final_labels = self._cat_labels(mosaic_labels)
         final_labels["img"] = img4
+        cv2.imwrite("mosaic.jpg", img4)
         return final_labels
 
     def _mosaic9(self, labels):
@@ -983,7 +990,8 @@ class RandomPerspective:
     """
 
     def __init__(
-        self, degrees=0.0, translate=0.1, scale=0.5, shear=0.0, perspective=0.0, border=(0, 0), pre_transform=None
+        self, degrees=0.0, translate=0.1, scale=0.5, shear=0.0, perspective=0.0, border=(0, 0), pre_transform=None,
+        degrees_prob=0.5, rotate90_prob=0.0, allow_out_of_bounds=False
     ):
         """
         Initializes RandomPerspective object with transformation parameters.
@@ -993,8 +1001,11 @@ class RandomPerspective:
 
         Args:
             degrees (float): Degree range for random rotations.
+            degrees_prob (float): Probability of applying random rotations.
+            rotate90_prob (float): Probability of applying random 90-degree rotations.
             translate (float): Fraction of total width and height for random translation.
             scale (float): Scaling factor interval, e.g., a scale factor of 0.5 allows a resize between 50%-150%.
+            allow_out_of_bounds (bool): If True, allows part of the original image to be outside the transformed image.
             shear (float): Shear intensity (angle in degrees).
             perspective (float): Perspective distortion factor.
             border (Tuple[int, int]): Tuple specifying mosaic border (top/bottom, left/right).
@@ -1006,8 +1017,11 @@ class RandomPerspective:
             >>> result = transform(labels)  # Apply random perspective to labels
         """
         self.degrees = degrees
+        self.degrees_prob = degrees_prob
+        self.rotate90_prob = rotate90_prob
         self.translate = translate
         self.scale = scale
+        self.allow_out_of_bounds = allow_out_of_bounds
         self.shear = shear
         self.perspective = perspective
         self.border = border  # mosaic border
@@ -1050,10 +1064,21 @@ class RandomPerspective:
 
         # Rotation and Scale
         R = np.eye(3, dtype=np.float32)
-        a = random.uniform(-self.degrees, self.degrees)
-        # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
-        s = random.uniform(1 - self.scale, 1 + self.scale)
+        a = random.uniform(-self.degrees, self.degrees) if random.random() < self.degrees_prob else 0.0
+        if random.random() < self.rotate90_prob:
+            a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
+        in_size = max(img.shape)
+        out_size = max(self.size)
+        s = out_size / in_size
+        s *= random.uniform(1 - self.scale, (1 + self.scale) if self.allow_out_of_bounds
+            else max(1.1, 1 + self.scale))
         # s = 2 ** random.uniform(-scale, scale)
+        
+        # Make up for the rotation by zooming out using cosines
+        max_translation = 1
+        if not self.allow_out_of_bounds:
+            max_translation = abs(s - 1) / 2
+            s *= max(math.cos(abs(a) * math.pi / 180), math.sin(abs(a) * math.pi / 180))
         R[:2] = cv2.getRotationMatrix2D(angle=a, center=(0, 0), scale=s)
 
         # Shear
@@ -1063,8 +1088,9 @@ class RandomPerspective:
 
         # Translation
         T = np.eye(3, dtype=np.float32)
-        T[0, 2] = random.uniform(0.5 - self.translate, 0.5 + self.translate) * self.size[0]  # x translation (pixels)
-        T[1, 2] = random.uniform(0.5 - self.translate, 0.5 + self.translate) * self.size[1]  # y translation (pixels)
+        for dim in [0, 1]:
+            T[dim, 2] = (np.clip(random.uniform(-self.translate, self.translate),
+                                 -max_translation, max_translation) + 0.5) * self.size[dim]  # translation (px)
 
         # Combined rotation matrix
         M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT
@@ -2280,14 +2306,20 @@ def v8_transforms(dataset, imgsz, hyp, stretch=False):
         >>> transforms = v8_transforms(dataset, imgsz=640, hyp=hyp)
         >>> augmented_data = transforms(dataset[0])
     """
+    print("\n\n====================\n\n")
+    print(hyp)
+    print("\n\n====================\n\n")
     pre_transform = Compose(
         [
-            Mosaic(dataset, imgsz=imgsz, p=hyp.mosaic),
+            Mosaic(dataset, imgsz=imgsz, p=hyp.mosaic, centered_mosaic=hyp.centered_mosaic),
             CopyPaste(p=hyp.copy_paste),
             RandomPerspective(
                 degrees=hyp.degrees,
+                degrees_prob=hyp.degrees_prob,
+                rotate90_prob=hyp.rotate90_prob,
                 translate=hyp.translate,
                 scale=hyp.scale,
+                allow_out_of_bounds=hyp.allow_out_of_bounds,
                 shear=hyp.shear,
                 perspective=hyp.perspective,
                 pre_transform=None if stretch else LetterBox(new_shape=(imgsz, imgsz)),
