@@ -2305,9 +2305,6 @@ def v8_transforms(dataset, imgsz, hyp, stretch=False):
         >>> transforms = v8_transforms(dataset, imgsz=640, hyp=hyp)
         >>> augmented_data = transforms(dataset[0])
     """
-    print("\n\n====================\n\n")
-    print(hyp)
-    print("\n\n====================\n\n")
     pre_transform = Compose(
         [
             Mosaic(dataset, imgsz=imgsz, p=hyp.mosaic, centered_mosaic=hyp.centered_mosaic),
