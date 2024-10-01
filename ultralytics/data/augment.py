@@ -655,6 +655,7 @@ class Mosaic(BaseMixTransform):
         final_labels = self._cat_labels(mosaic_labels)
 
         final_labels["img"] = img3[-self.border[0] : self.border[0], -self.border[1] : self.border[1]]
+        final_labels["mosaic_size"] = 3
         return final_labels
 
     def _mosaic4(self, labels):
@@ -716,6 +717,7 @@ class Mosaic(BaseMixTransform):
             mosaic_labels.append(labels_patch)
         final_labels = self._cat_labels(mosaic_labels)
         final_labels["img"] = img4
+        final_labels["mosaic_size"] = 4
         return final_labels
 
     def _mosaic9(self, labels):
@@ -788,6 +790,7 @@ class Mosaic(BaseMixTransform):
         final_labels = self._cat_labels(mosaic_labels)
 
         final_labels["img"] = img9[-self.border[0] : self.border[0], -self.border[1] : self.border[1]]
+        final_labels["mosaic_size"] = 9
         return final_labels
 
     @staticmethod
@@ -894,8 +897,8 @@ class ReplaceConstantBackground(BaseMixTransform):
             return labels
         
         # Find the constant background ONLY when contiguous to the image border
-        img = labels["img"]
-        mask = np.all(img == self.constant_color, axis=-1)
+        img_shape = labels["img"].shape[:2]
+        mask = np.all(labels["img"] == self.constant_color, axis=-1)
         # mask = self._filter_borders_only(mask)
         if mask.sum() == 0:
             return labels
@@ -906,20 +909,25 @@ class ReplaceConstantBackground(BaseMixTransform):
         padw = np.all(background_mask, axis=0).sum()
         padh = np.all(background_mask, axis=1).sum()
         actual_size = (background.shape[0] - padh, background.shape[1] - padw)
-        target_size = (img.shape[0], img.shape[1])
+        target_size = (img_shape[0], img_shape[1])
         zoom_ratio = max(target_size[0] / actual_size[0], target_size[1] / actual_size[1])
         
         if zoom_ratio != 1:
             background = cv2.resize(
                 background, (int(background.shape[1] * zoom_ratio), int(background.shape[0] * zoom_ratio))
             )
-            size_diff = (background.shape[0] - img.shape[0], background.shape[1] - img.shape[1])
+            size_diff = (background.shape[0] - img_shape[0], background.shape[1] - img_shape[1])
             margin_x = size_diff[1] // 2
             margin_y = size_diff[0] // 2
-            background = background[margin_y:margin_y + img.shape[0], margin_x:margin_x + img.shape[1]]
+            background = background[margin_y:margin_y + img_shape[0], margin_x:margin_x + img_shape[1]]
             
         # Replace the constant background with the background image
-        img[mask] = background[mask]
+        try:
+            labels['img'][mask] = background[mask]
+            labels['bg_replaced'] = True
+        except IndexError:
+            print(f"Size mismatch: {img_shape} (img) vs {background.shape} (background). "
+                  "Skipping background replacement.")
         return labels
 
 
