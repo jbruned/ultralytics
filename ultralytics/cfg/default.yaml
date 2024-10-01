@@ -111,6 +111,8 @@ translate: 0.1 # (float) image translation (+/- fraction)
 scale: 0.5 # (float) image scale (+/- gain)
 allow_out_of_bounds: True # (bool) image scale allow out of bounds
 centered_mosaic: False # (bool) less-randomized mosaic center
+image_as_background: 0.0 # (float) use image instead of constant background (probability)
+also_close_background: True # (bool) disable background at the same time as the mosaic
 shear: 0.0 # (float) image shear (+/- deg)
 perspective: 0.0 # (float) image perspective (+/- fraction), range 0-0.001
 flipud: 0.0 # (float) image flip up-down (probability)

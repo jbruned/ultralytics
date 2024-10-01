@@ -867,6 +867,60 @@ class Mosaic(BaseMixTransform):
         if "texts" in mosaic_labels[0]:
             final_labels["texts"] = mosaic_labels[0]["texts"]
         return final_labels
+    
+    
+class ReplaceConstantBackground(BaseMixTransform):
+    """
+    Uses an image without objects as the background.
+    
+    Removes the constant background from the image and replaces it with another image.
+    """
+    def __init__(self, dataset, p=1.0, constant_color=(114, 114, 114)):
+        super().__init__(dataset=dataset, p=p)
+        self.constant_color = constant_color
+        
+    def get_indexes(self, buffer=True):
+        """
+        Returns a list of random indexes from the dataset to use as background.
+        """
+        if buffer:  # select images from buffer
+            return random.choices(list(self.dataset.buffer), k=20)
+        else:  # select any images
+            return [random.randint(0, len(self.dataset) - 1) for _ in range(20)]
+        
+    def _mix_transform(self, labels):
+        background = next((img2 for img2 in labels["mix_labels"] if len(img2["instances"]) == 0), None)
+        if background is None:
+            return labels
+        
+        # Find the constant background ONLY when contiguous to the image border
+        img = labels["img"]
+        mask = np.all(img == self.constant_color, axis=-1)
+        # mask = self._filter_borders_only(mask)
+        if mask.sum() == 0:
+            return labels
+        
+        # Zoom in background if necessary
+        background = background["img"]
+        background_pad_mask = np.all(background == self.constant_color, axis=-1)
+        # background_pad_mask = self._filter_borders_only(background_pad_mask)
+        zoom_ratio = min(mask.sum() / background_pad_mask.sum(), 1)
+        
+        if zoom_ratio > 0:
+            print(background.shape)
+            background = cv2.resize(
+                background, (int(background.shape[1] * zoom_ratio), int(background.shape[0] * zoom_ratio))
+            )
+            size_diff = (background.shape[0] - img.shape[0], background.shape[1] - img.shape[1])
+            margin_x = size_diff[1] // 2
+            margin_y = size_diff[0] // 2
+            background = background[margin_y:margin_y + img.shape[0], margin_x:margin_x + img.shape[1]]
+            background = cv2.resize(background, (img.shape[1], img.shape[0]))
+            
+        # Replace the constant background with the background image
+        print(mask.shape, background.shape, img.shape)
+        img[mask] = background[mask]
+        return labels
 
 
 class MixUp(BaseMixTransform):
@@ -2320,6 +2374,7 @@ def v8_transforms(dataset, imgsz, hyp, stretch=False):
                 perspective=hyp.perspective,
                 pre_transform=None if stretch else LetterBox(new_shape=(imgsz, imgsz)),
             ),
+            ReplaceConstantBackground(dataset, p=hyp.image_as_background),
         ]
     )
     flip_idx = dataset.data.get("flip_idx", [])  # for keypoints augmentation
