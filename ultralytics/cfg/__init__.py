@@ -124,7 +124,6 @@ CFG_FRACTION_KEYS = {  # fractional float arguments with 0.0<=values<=1.0
     "hsv_s",
     "hsv_v",
     "translate",
-    "scale",
     "perspective",
     "flipud",
     "fliplr",

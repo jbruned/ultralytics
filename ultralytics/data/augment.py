@@ -902,12 +902,14 @@ class ReplaceConstantBackground(BaseMixTransform):
         
         # Zoom in background if necessary
         background = background["img"]
-        background_pad_mask = np.all(background == self.constant_color, axis=-1)
-        # background_pad_mask = self._filter_borders_only(background_pad_mask)
-        zoom_ratio = min(mask.sum() / background_pad_mask.sum(), 1)
+        background_mask = np.all(background == self.constant_color, axis=-1)
+        padw = np.all(background_mask, axis=0).sum()
+        padh = np.all(background_mask, axis=1).sum()
+        actual_size = (background.shape[0] - padh, background.shape[1] - padw)
+        target_size = (img.shape[0], img.shape[1])
+        zoom_ratio = max(target_size[0] / actual_size[0], target_size[1] / actual_size[1])
         
-        if zoom_ratio > 0:
-            print(background.shape)
+        if zoom_ratio != 1:
             background = cv2.resize(
                 background, (int(background.shape[1] * zoom_ratio), int(background.shape[0] * zoom_ratio))
             )
@@ -915,10 +917,8 @@ class ReplaceConstantBackground(BaseMixTransform):
             margin_x = size_diff[1] // 2
             margin_y = size_diff[0] // 2
             background = background[margin_y:margin_y + img.shape[0], margin_x:margin_x + img.shape[1]]
-            background = cv2.resize(background, (img.shape[1], img.shape[0]))
             
         # Replace the constant background with the background image
-        print(mask.shape, background.shape, img.shape)
         img[mask] = background[mask]
         return labels
 
@@ -1123,8 +1123,12 @@ class RandomPerspective:
         in_size = max(img.shape)
         out_size = max(self.size)
         s = out_size / in_size
-        s *= random.uniform(1 - self.scale, (1 + self.scale) if self.allow_out_of_bounds
-            else max(1.1, 1 + self.scale))
+        if not isinstance(self.scale, float):
+            min_scale, max_scale = self.scale
+        else:
+            min_scale = 1 - self.scale
+            max_scale = (1 + self.scale) if self.allow_out_of_bounds else max(1.1, 1 + self.scale)
+        s *= random.uniform(min_scale, max_scale)
         # s = 2 ** random.uniform(-scale, scale)
         
         # Make up for the rotation by zooming out using cosines

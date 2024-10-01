@@ -108,7 +108,7 @@ degrees: 0.0 # (float) image rotation (+/- deg)
 degrees_prob: 1 # (float) image rotation (probability)
 rotate90_prob: 0 # (float) image rotate90 (probability)
 translate: 0.1 # (float) image translation (+/- fraction)
-scale: 0.5 # (float) image scale (+/- gain)
+scale: 0.5 # (float) image scale (+/- gain or [min, max])
 allow_out_of_bounds: True # (bool) image scale allow out of bounds
 centered_mosaic: False # (bool) less-randomized mosaic center
 image_as_background: 0.0 # (float) use image instead of constant background (probability)
