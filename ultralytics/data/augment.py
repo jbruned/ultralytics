@@ -655,7 +655,7 @@ class Mosaic(BaseMixTransform):
         final_labels = self._cat_labels(mosaic_labels)
 
         final_labels["img"] = img3[-self.border[0] : self.border[0], -self.border[1] : self.border[1]]
-        final_labels["mosaic_size"] = 3
+        # final_labels["mosaic_size"] = 3
         return final_labels
 
     def _mosaic4(self, labels):
@@ -717,7 +717,7 @@ class Mosaic(BaseMixTransform):
             mosaic_labels.append(labels_patch)
         final_labels = self._cat_labels(mosaic_labels)
         final_labels["img"] = img4
-        final_labels["mosaic_size"] = 4
+        # final_labels["mosaic_size"] = 4
         return final_labels
 
     def _mosaic9(self, labels):
@@ -790,7 +790,7 @@ class Mosaic(BaseMixTransform):
         final_labels = self._cat_labels(mosaic_labels)
 
         final_labels["img"] = img9[-self.border[0] : self.border[0], -self.border[1] : self.border[1]]
-        final_labels["mosaic_size"] = 9
+        # final_labels["mosaic_size"] = 9
         return final_labels
 
     @staticmethod
@@ -924,7 +924,7 @@ class ReplaceConstantBackground(BaseMixTransform):
         # Replace the constant background with the background image
         try:
             labels['img'][mask] = background[mask]
-            labels['bg_replaced'] = True
+            # labels['bg_replaced'] = True
         except IndexError:
             print(f"Size mismatch: {img_shape} (img) vs {background.shape} (background). "
                   "Skipping background replacement.")
