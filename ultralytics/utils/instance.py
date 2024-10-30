@@ -338,7 +338,7 @@ class Instances:
         if self.keypoints is not None:
             self.keypoints[..., 0] = w - self.keypoints[..., 0]
 
-    def clip(self, w, h):
+    def clip(self, w, h, clip_keypoints=True):
         """Clips bounding boxes, segments, and keypoints values to stay within image boundaries."""
         ori_format = self._bboxes.format
         self.convert_bbox(format="xyxy")
@@ -348,7 +348,7 @@ class Instances:
             self.convert_bbox(format=ori_format)
         self.segments[..., 0] = self.segments[..., 0].clip(0, w)
         self.segments[..., 1] = self.segments[..., 1].clip(0, h)
-        if self.keypoints is not None:
+        if self.keypoints is not None and clip_keypoints:
             self.keypoints[..., 0] = self.keypoints[..., 0].clip(0, w)
             self.keypoints[..., 1] = self.keypoints[..., 1].clip(0, h)
 

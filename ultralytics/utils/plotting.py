@@ -365,7 +365,8 @@ class Annotator:
             # Convert im back to PIL and update draw
             self.fromarray(self.im)
 
-    def kpts(self, kpts, shape=(640, 640), radius=5, kpt_line=True, conf_thres=0.25, kpt_color=None):
+    def kpts(self, kpts, shape=(640, 640), radius=5, kpt_line=True, conf_thres=0.25, kpt_color=None,
+             show_kpt_ids=False):
         """
         Plot keypoints on the image.
 
@@ -376,6 +377,7 @@ class Annotator:
             kpt_line (bool, optional): Draw lines between keypoints. Defaults to True.
             conf_thres (float, optional): Confidence threshold. Defaults to 0.25.
             kpt_color (tuple, optional): Keypoint color (B, G, R). Defaults to None.
+            show_kpt_ids (bool, optional): Show keypoint IDs. Defaults to False.
 
         Note:
             - `kpt_line=True` currently only supports human pose plotting.
@@ -396,8 +398,20 @@ class Annotator:
                     conf = k[2]
                     if conf < conf_thres:
                         continue
-                cv2.circle(self.im, (int(x_coord), int(y_coord)), radius, color_k, -1, lineType=cv2.LINE_AA)
-
+                if show_kpt_ids:
+                    cv2.putText(
+                        self.im,
+                        str(i + 1),
+                        (int(x_coord), int(y_coord)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (255, 255, 255),
+                        1,
+                        lineType=cv2.LINE_AA,
+                    )
+                else:
+                    cv2.circle(self.im, (int(x_coord), int(y_coord)), radius, color_k, -1, lineType=cv2.LINE_AA)
+            
         if kpt_line:
             ndim = kpts.shape[-1]
             for i, sk in enumerate(self.skeleton):
@@ -933,6 +947,7 @@ def plot_images(
     max_subplots: int = 16,
     save: bool = True,
     conf_thres: float = 0.25,
+    show_kpt_ids: bool = True,
 ) -> Optional[np.ndarray]:
     """
     Plot image grid with labels, bounding boxes, masks, and keypoints.
@@ -953,6 +968,7 @@ def plot_images(
         max_subplots: Maximum number of subplots in the image grid.
         save: Whether to save the plotted image grid to a file.
         conf_thres: Confidence threshold for displaying detections.
+        show_kpt_ids: Whether to display keypoint IDs.
 
     Returns:
         np.ndarray: Plotted image grid as a numpy array if save is False, None otherwise.
@@ -1046,7 +1062,7 @@ def plot_images(
                 kpts_[..., 1] += y
                 for j in range(len(kpts_)):
                     if labels or conf[j] > conf_thres:
-                        annotator.kpts(kpts_[j], conf_thres=conf_thres)
+                        annotator.kpts(kpts_[j], conf_thres=conf_thres, show_kpt_ids=show_kpt_ids)
 
             # Plot masks
             if len(masks):

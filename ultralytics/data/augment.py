@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
+from shapely.geometry import Polygon
 
 from ultralytics.data.utils import polygons2masks, polygons2masks_overlap
 from ultralytics.utils import LOGGER, colorstr
@@ -517,7 +518,7 @@ class Mosaic(BaseMixTransform):
         >>> augmented_labels = mosaic_aug(original_labels)
     """
 
-    def __init__(self, dataset, imgsz=640, p=1.0, n=4, centered_mosaic=False):
+    def __init__(self, dataset, imgsz=640, p=1.0, n=4, centered_mosaic=False, clip_keypoints=True):
         """
         Initializes the Mosaic augmentation object.
 
@@ -530,6 +531,7 @@ class Mosaic(BaseMixTransform):
             p (float): Probability of applying the mosaic augmentation. Must be in the range 0-1.
             n (int): The grid size, either 4 (for 2x2) or 9 (for 3x3).
             centered_mosaic (bool): Whether to allow augmented images to go out of bounds.
+            clip_keypoints (bool): Whether to clip keypoints to the image size after mosaic augmentation.
 
         Examples:
             >>> from ultralytics.data.augment import Mosaic
@@ -543,6 +545,7 @@ class Mosaic(BaseMixTransform):
         self.border = (-imgsz // 2, -imgsz // 2)  # width, height
         self.n = n
         self.centered_mosaic = centered_mosaic
+        self.clip_keypoints = clip_keypoints
 
     def get_indexes(self, buffer=True):
         """
@@ -864,7 +867,7 @@ class Mosaic(BaseMixTransform):
             "instances": Instances.concatenate(instances, axis=0),
             "mosaic_border": self.border,
         }
-        final_labels["instances"].clip(imgsz, imgsz)
+        final_labels["instances"].clip(imgsz, imgsz, clip_keypoints=self.clip_keypoints)
         good = final_labels["instances"].remove_zero_area_boxes()
         final_labels["cls"] = final_labels["cls"][good]
         if "texts" in mosaic_labels[0]:
@@ -928,6 +931,114 @@ class ReplaceConstantBackground(BaseMixTransform):
         except IndexError:
             print(f"Size mismatch: {img_shape} (img) vs {background.shape} (background). "
                   "Skipping background replacement.")
+        return labels
+    
+    
+class RelocateKeypoints(BaseMixTransform):
+    """
+    Relocates keypoints which have gone out of bounds after applying transformations.
+    Intended for use cases such as corner detection, where keypoints have to be clipped to the image
+    boundaries but still preserved.
+    """
+    def __init__(self, dataset, apply=True):
+        super().__init__(dataset=dataset, p=1. if apply else 0.)
+        
+    def get_indexes(self):
+        return []
+        
+    @staticmethod
+    def _clip_keypoints(keypoints, w=1., h=1., n_attempts=10):
+        kp_poly = Polygon(keypoints.reshape(-1, 2))
+        im_poly = Polygon([(0, 0), (w, 0), (w, h), (0, h)])
+        kp_poly = kp_poly.intersection(im_poly)
+        
+        # Remove points until the polygon has 4 corners (.exterior.coords includes the first point twice)
+        while len(kp_poly.exterior.coords) > 5:
+            if n_attempts == 0 or kp_poly.area == 0:
+                return None
+            n_attempts -= 1
+            
+            # Pick 2 closest points
+            coords = list(kp_poly.exterior.coords)[:-1]
+            min_dist = float("inf")
+            min_idx = None
+            for i in range(len(coords)):
+                dist = np.linalg.norm(np.array(coords[i]) - np.array(coords[(i + 1) % len(coords)]))
+                if dist < min_dist:
+                    min_dist = dist
+                    min_idx = i
+            candidates = [
+                coords[min_idx], coords[(min_idx + 1) % len(coords)],
+                ((coords[min_idx][0] + coords[(min_idx + 1) % len(coords)][0]) / 2,
+                 (coords[min_idx][1] + coords[(min_idx + 1) % len(coords)][1]) / 2)
+            ]
+            
+            # Choose the candidate that maximizes the IoU with the original polygon
+            max_iou = 0
+            max_idx = None
+            for i, candidate in enumerate(candidates):
+                new_coords = coords.copy()
+                new_coords[min_idx] = candidate
+                new_coords.pop((min_idx + 1) % len(coords))
+                new_poly = Polygon(new_coords)
+                iou = new_poly.intersection(kp_poly).area / kp_poly.area
+                if iou > max_iou:
+                    max_iou = iou
+                    max_idx = i
+            
+            # Remove both points and add the new point instead
+            coords[min_idx] = candidates[max_idx]
+            coords.pop((min_idx + 1) % len(coords))
+            kp_poly = Polygon(coords)
+        
+        if len(kp_poly.exterior.coords) != 5:
+            print("Warning: polygon has more than 4 corners after clipping, ignoring")
+            return None
+        return np.array(kp_poly.exterior.coords)[:-1].reshape(-1, 2)
+        
+    def _mix_transform(self, labels):
+        for i in range(len(labels["instances"].keypoints)):
+            w, h = labels["img"].shape[:2]
+            coords = self._clip_keypoints(labels["instances"].keypoints[i, :, :2], w, h)
+            if coords is not None:
+                labels["instances"].keypoints[i, :, :2] = coords
+        return labels
+    
+    
+class ReorderKeypoints(BaseMixTransform):
+    """
+    Reorders the keypoints such that the first keypoint is the top-left corner and
+    the rest are ordered clockwise.
+    Intended for use cases such as corner detection, where the keypoints are indistinguishable among each
+    other, and transformations might change their order, so we want to standardize them.
+    """
+    def __init__(self, dataset, apply=True):
+        super().__init__(dataset=dataset, p=1. if apply else 0.)
+        
+    def get_indexes(self):
+        return []
+    
+    @staticmethod
+    def _sort_clockwise(points):
+        """
+        Sorts a list of points in clockwise order, starting from the top-left corner.
+
+        Args:
+            points: np.array of shape (n, 2) with n points
+
+        Returns:
+            np.array of shape (n, 2) with the points sorted in clockwise order
+        """
+        centroid = np.mean(points, axis=0)
+        angles = np.arctan2(points[:, 1] - centroid[1], points[:, 0] - centroid[0])
+        new_points = points[np.argsort(angles)]
+        return new_points if Polygon(np.array(new_points)).is_valid else None
+    
+    def _mix_transform(self, labels):
+        for i in range(len(labels["instances"].keypoints)):
+            coords = self._sort_clockwise(labels["instances"].keypoints[i, :, :2])
+            if coords is not None:
+                labels["instances"].keypoints[i, :, :2] = coords
         return labels
 
 
@@ -1052,7 +1163,7 @@ class RandomPerspective:
 
     def __init__(
         self, degrees=0.0, translate=0.1, scale=0.5, shear=0.0, perspective=0.0, border=(0, 0), pre_transform=None,
-        degrees_prob=0.5, rotate90_prob=0.0, allow_out_of_bounds=False
+        degrees_prob=0.5, rotate90_prob=0.0, allow_out_of_bounds=False, clip_keypoints=True
     ):
         """
         Initializes RandomPerspective object with transformation parameters.
@@ -1072,6 +1183,7 @@ class RandomPerspective:
             border (Tuple[int, int]): Tuple specifying mosaic border (top/bottom, left/right).
             pre_transform (Callable | None): Function/transform to apply to the image before starting the random
                 transformation.
+            clip_keypoints (bool): If True, clips keypoints to the image boundaries after applying the transformation.
 
         Examples:
             >>> transform = RandomPerspective(degrees=10.0, translate=0.1, scale=0.5, shear=5.0)
@@ -1087,6 +1199,7 @@ class RandomPerspective:
         self.perspective = perspective
         self.border = border  # mosaic border
         self.pre_transform = pre_transform
+        self.clip_keypoints = clip_keypoints
 
     def affine_transform(self, img, border):
         """
@@ -1268,8 +1381,9 @@ class RandomPerspective:
         xy[:, :2] = keypoints[..., :2].reshape(n * nkpt, 2)
         xy = xy @ M.T  # transform
         xy = xy[:, :2] / xy[:, 2:3]  # perspective rescale or affine
-        out_mask = (xy[:, 0] < 0) | (xy[:, 1] < 0) | (xy[:, 0] > self.size[0]) | (xy[:, 1] > self.size[1])
-        visible[out_mask] = 0
+        if self.clip_keypoints:
+            out_mask = (xy[:, 0] < 0) | (xy[:, 1] < 0) | (xy[:, 0] > self.size[0]) | (xy[:, 1] > self.size[1])
+            visible[out_mask] = 0
         return np.concatenate([xy, visible], axis=-1).reshape(n, nkpt, 3)
 
     def __call__(self, labels):
@@ -1336,7 +1450,7 @@ class RandomPerspective:
             keypoints = self.apply_keypoints(keypoints, M)
         new_instances = Instances(bboxes, segments, keypoints, bbox_format="xyxy", normalized=False)
         # Clip
-        new_instances.clip(*self.size)
+        new_instances.clip(*self.size, clip_keypoints=self.clip_keypoints)
 
         # Filter instances
         instances.scale(scale_w=scale, scale_h=scale, bbox_only=True)
@@ -2373,7 +2487,8 @@ def v8_transforms(dataset, imgsz, hyp, stretch=False):
     """
     pre_transform = Compose(
         [
-            Mosaic(dataset, imgsz=imgsz, p=hyp.mosaic, centered_mosaic=hyp.centered_mosaic),
+            Mosaic(dataset, imgsz=imgsz, p=hyp.mosaic, centered_mosaic=hyp.centered_mosaic,
+                   clip_keypoints=not hyp.relocate_keypoints),
             CopyPaste(p=hyp.copy_paste),
             RandomPerspective(
                 degrees=hyp.degrees,
@@ -2385,8 +2500,11 @@ def v8_transforms(dataset, imgsz, hyp, stretch=False):
                 shear=hyp.shear,
                 perspective=hyp.perspective,
                 pre_transform=None if stretch else LetterBox(new_shape=(imgsz, imgsz)),
+                clip_keypoints=not hyp.relocate_keypoints,
             ),
             ReplaceConstantBackground(dataset, p=hyp.image_as_background),
+            RelocateKeypoints(dataset, apply=hyp.relocate_keypoints),
+            ReorderKeypoints(dataset, apply=hyp.reorder_keypoints),
         ]
     )
     flip_idx = dataset.data.get("flip_idx", [])  # for keypoints augmentation
