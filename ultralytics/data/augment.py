@@ -940,8 +940,9 @@ class RelocateKeypoints(BaseMixTransform):
     Intended for use cases such as corner detection, where keypoints have to be clipped to the image
     boundaries but still preserved.
     """
-    def __init__(self, dataset, apply=True):
+    def __init__(self, dataset, apply=True, remove_invalid_corners=False):
         super().__init__(dataset=dataset, p=1. if apply else 0.)
+        self.remove_invalid_corners = remove_invalid_corners
         
     def get_indexes(self):
         return []
@@ -951,7 +952,7 @@ class RelocateKeypoints(BaseMixTransform):
         kp_poly = Polygon(keypoints.reshape(-1, 2))
         im_poly = Polygon([(0, 0), (w, 0), (w, h), (0, h)])
         if not kp_poly.is_valid or not im_poly.is_valid:
-            LOGGER.warning("Invalid polygon, ignoring", np.array(kp_poly.exterior.coords)[:-1])
+            # LOGGER.warning("Invalid polygon, ignoring", np.array(kp_poly.exterior.coords)[:-1])
             return None
         
         # Remove points until the polygon has 4 corners (.exterior.coords includes the first point twice)
@@ -997,17 +998,22 @@ class RelocateKeypoints(BaseMixTransform):
             kp_poly = Polygon(coords)
         
         if len(kp_poly.exterior.coords) != 5:
-            LOGGER.warning("Polygon has other than 4 corners after clipping, ignoring"
-                           f"{np.array(kp_poly.exterior.coords)[:-1]}")
+            # LOGGER.warning("Polygon has other than 4 corners after clipping, ignoring"
+            #                f"{np.array(kp_poly.exterior.coords)[:-1]}")
             return None
         return np.array(kp_poly.exterior.coords)[:-1].reshape(-1, 2)
         
     def _mix_transform(self, labels):
+        bad_keypoints = []
         for i in range(len(labels["instances"].keypoints)):
             w, h = labels["img"].shape[:2]
             coords = self._clip_keypoints(labels["instances"].keypoints[i, :, :2], w, h)
             if coords is not None:
                 labels["instances"].keypoints[i, :, :2] = coords
+            else:
+                bad_keypoints.append(i)
+        if self.remove_invalid_corners:
+            labels["instances"].remove(bad_keypoints)
         return labels
     
     
@@ -2542,7 +2548,7 @@ def v8_transforms(dataset, imgsz, hyp, stretch=False):
             RandomHSV(hgain=hyp.hsv_h, sgain=hyp.hsv_s, vgain=hyp.hsv_v),
             RandomFlip(direction="vertical", p=hyp.flipud),
             RandomFlip(direction="horizontal", p=hyp.fliplr, flip_idx=flip_idx),
-            RelocateKeypoints(dataset, apply=hyp.relocate_keypoints),
+            RelocateKeypoints(dataset, apply=hyp.relocate_keypoints, remove_invalid_corners=hyp.remove_invalid_corners),
             ReorderKeypoints(dataset, apply=hyp.reorder_keypoints),
         ]
     )  # transforms

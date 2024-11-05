@@ -351,6 +351,16 @@ class Instances:
         if self.keypoints is not None and clip_keypoints:
             self.keypoints[..., 0] = self.keypoints[..., 0].clip(0, w)
             self.keypoints[..., 1] = self.keypoints[..., 1].clip(0, h)
+            
+    def remove(self, indices):
+        """Remove instances with specified indices (in-place)."""
+        if len(indices) == 0:
+            return
+        self._bboxes = self._bboxes[indices]
+        if len(self.segments):
+            self.segments = self.segments[indices]
+        if self.keypoints is not None:
+            self.keypoints = self.keypoints[indices]
 
     def remove_zero_area_boxes(self):
         """Remove zero-area boxes, i.e. after clipping some boxes may have zero width or height."""
