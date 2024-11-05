@@ -950,9 +950,12 @@ class RelocateKeypoints(BaseMixTransform):
     def _clip_keypoints(keypoints, w=1., h=1., n_attempts=10):
         kp_poly = Polygon(keypoints.reshape(-1, 2))
         im_poly = Polygon([(0, 0), (w, 0), (w, h), (0, h)])
-        kp_poly = kp_poly.intersection(im_poly)
+        if not kp_poly.is_valid or not im_poly.is_valid:
+            LOGGER.warning("Invalid polygon, ignoring", np.array(kp_poly.exterior.coords)[:-1])
+            return None
         
         # Remove points until the polygon has 4 corners (.exterior.coords includes the first point twice)
+        kp_poly = kp_poly.intersection(im_poly)
         while len(kp_poly.exterior.coords) > 5:
             if n_attempts == 0 or kp_poly.area == 0:
                 return None
@@ -981,6 +984,8 @@ class RelocateKeypoints(BaseMixTransform):
                 new_coords[min_idx] = candidate
                 new_coords.pop((min_idx + 1) % len(coords))
                 new_poly = Polygon(new_coords)
+                if not new_poly.is_valid:
+                    continue
                 iou = new_poly.intersection(kp_poly).area / kp_poly.area
                 if iou > max_iou:
                     max_iou = iou
@@ -992,7 +997,8 @@ class RelocateKeypoints(BaseMixTransform):
             kp_poly = Polygon(coords)
         
         if len(kp_poly.exterior.coords) != 5:
-            print("Warning: polygon has more than 4 corners after clipping, ignoring")
+            LOGGER.warning("Polygon has other than 4 corners after clipping, ignoring"
+                           f"{np.array(kp_poly.exterior.coords)[:-1]}")
             return None
         return np.array(kp_poly.exterior.coords)[:-1].reshape(-1, 2)
         
@@ -1163,7 +1169,7 @@ class RandomPerspective:
 
     def __init__(
         self, degrees=0.0, translate=0.1, scale=0.5, shear=0.0, perspective=0.0, border=(0, 0), pre_transform=None,
-        degrees_prob=0.5, rotate90_prob=0.0, allow_out_of_bounds=False, clip_keypoints=True
+        degrees_prob=0.5, rotate90_prob=0.0, perspective_prob=1.0, allow_out_of_bounds=False, clip_keypoints=True
     ):
         """
         Initializes RandomPerspective object with transformation parameters.
@@ -1197,6 +1203,7 @@ class RandomPerspective:
         self.allow_out_of_bounds = allow_out_of_bounds
         self.shear = shear
         self.perspective = perspective
+        self.perspective_prob = perspective_prob
         self.border = border  # mosaic border
         self.pre_transform = pre_transform
         self.clip_keypoints = clip_keypoints
@@ -1233,8 +1240,10 @@ class RandomPerspective:
 
         # Perspective
         P = np.eye(3, dtype=np.float32)
-        P[2, 0] = random.uniform(-self.perspective, self.perspective)  # x perspective (about y)
-        P[2, 1] = random.uniform(-self.perspective, self.perspective)  # y perspective (about x)
+        P[2, 0] = random.uniform(-self.perspective, self.perspective) \
+            if random.random() < self.perspective_prob else 0  # x perspective (about y)
+        P[2, 1] = random.uniform(-self.perspective, self.perspective) \
+            if random.random() < self.perspective_prob else 0  # y perspective (about x)
 
         # Rotation and Scale
         R = np.eye(3, dtype=np.float32)
@@ -1947,7 +1956,7 @@ class Albumentations:
         - Spatial transforms are handled differently and require special processing for bounding boxes.
     """
 
-    def __init__(self, p=1.0):
+    def __init__(self, p=1.0, higher_distortion=False):
         """
         Initialize the Albumentations transform object for YOLO bbox formatted parameters.
 
@@ -1957,6 +1966,7 @@ class Albumentations:
 
         Args:
             p (float): Probability of applying the augmentations. Must be between 0 and 1.
+            higher_distortion (bool): Whether to apply heavier than built-in distortions.
 
         Attributes:
             p (float): Probability of applying the augmentations.
@@ -2033,14 +2043,23 @@ class Albumentations:
 
             # Transforms
             T = [
-                A.Blur(p=0.01),
-                A.MedianBlur(p=0.01),
-                A.ToGray(p=0.01),
-                A.CLAHE(p=0.01),
-                A.RandomBrightnessContrast(p=0.0),
-                A.RandomGamma(p=0.0),
-                A.ImageCompression(quality_lower=75, p=0.0),
+                A.Blur(p=0.05 if higher_distortion else 0.01),
+                A.MedianBlur(p=0.05 if higher_distortion else 0.01),
+                A.ToGray(p=0.05 if higher_distortion else 0.01),
+                A.CLAHE(p=0.05 if higher_distortion else 0.01),
+                A.RandomBrightnessContrast(p=0.05 if higher_distortion else 0.),
+                A.RandomGamma(p=0.05 if higher_distortion else 0.),
+                A.ImageCompression(quality_lower=75, p=0.05 if higher_distortion else 0.),
             ]
+            if higher_distortion:
+                T.extend([
+                    A.Defocus(radius=(1, 2), alias_blur=(0.1, 0.17), p=.05),
+                    A.Downscale(scale_min=.88, scale_max=.95, p=.05),
+                    A.GaussNoise(var_limit=(50, 100), p=.05),
+                    A.RGBShift(p=.05),
+                    A.RingingOvershoot(blur_limit=(9, 14), cutoff=(1.3, 2.9), p=.05),
+                    A.ZoomBlur(max_factor=1.06, p=.05),
+                ])
 
             # Compose transforms
             self.contains_spatial = any(transform.__class__.__name__ in spatial_transforms for transform in T)
@@ -2499,12 +2518,11 @@ def v8_transforms(dataset, imgsz, hyp, stretch=False):
                 allow_out_of_bounds=hyp.allow_out_of_bounds,
                 shear=hyp.shear,
                 perspective=hyp.perspective,
+                perspective_prob=hyp.perspective_prob,
                 pre_transform=None if stretch else LetterBox(new_shape=(imgsz, imgsz)),
                 clip_keypoints=not hyp.relocate_keypoints,
             ),
             ReplaceConstantBackground(dataset, p=hyp.image_as_background),
-            RelocateKeypoints(dataset, apply=hyp.relocate_keypoints),
-            ReorderKeypoints(dataset, apply=hyp.reorder_keypoints),
         ]
     )
     flip_idx = dataset.data.get("flip_idx", [])  # for keypoints augmentation
@@ -2520,10 +2538,12 @@ def v8_transforms(dataset, imgsz, hyp, stretch=False):
         [
             pre_transform,
             MixUp(dataset, pre_transform=pre_transform, p=hyp.mixup),
-            Albumentations(p=1.0),
+            Albumentations(p=1.0, higher_distortion=hyp.higher_distortion),
             RandomHSV(hgain=hyp.hsv_h, sgain=hyp.hsv_s, vgain=hyp.hsv_v),
             RandomFlip(direction="vertical", p=hyp.flipud),
             RandomFlip(direction="horizontal", p=hyp.fliplr, flip_idx=flip_idx),
+            RelocateKeypoints(dataset, apply=hyp.relocate_keypoints),
+            ReorderKeypoints(dataset, apply=hyp.reorder_keypoints),
         ]
     )  # transforms
 
