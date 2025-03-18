@@ -174,7 +174,6 @@ CFG_FRACTION_KEYS = frozenset(
         "hsv_s",
         "hsv_v",
         "translate",
-        "scale",
         "perspective",
         "flipud",
         "fliplr",
